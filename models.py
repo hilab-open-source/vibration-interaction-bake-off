@@ -44,8 +44,9 @@ def make_dummy_spectrum(
 
 def get_audio_features(ear: StreamAnalyzer) -> tuple[list[float], list[float]]:
     """Function called every frame which retrieves the audio features generated
-    from a given StreamAnalyzer class. Intended for students to make preprocessing changes.
-    Will be visualized in the visualizer afterwards.
+    from a given StreamAnalyzer class. Intended for students to make preprocessing
+    changes. The visualizer plots the full FFT as frequency in Hz on the x axis
+    and FFT amplitude on the y axis.
 
     Args:
         ear (StreamAnalyzer): Class for capture and FFT processing of audio signals
@@ -56,7 +57,7 @@ def get_audio_features(ear: StreamAnalyzer) -> tuple[list[float], list[float]]:
     if ear is None:
         return make_dummy_spectrum()
     else:
-        freqs, amps, _, _ = ear.get_audio_features()
+        freqs, amps, _frequency_bin_centres, _frequency_bin_energies = ear.get_audio_features()
         return freqs, amps
 
 

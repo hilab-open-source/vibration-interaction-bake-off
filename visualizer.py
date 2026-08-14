@@ -41,9 +41,12 @@ metadata = load_metadata()
 
 # ——— Global State ———
 
+FFT_Y_AXIS_MAX = 500_000
+
 ear = None  # StreamAnalyzer instance or None
 
-device_list = []  # Available input devices
+device_list = []  # Available input device names
+device_indices_by_name = {}  # {device_name: system audio device index}
 
 collected_data = {}  # { class_name: [data]}
 record_val = None  # Currently selected class
@@ -58,16 +61,20 @@ for idx in range(audio.get_device_count()):
     info = audio.get_device_info_by_index(idx)
     if info.get("maxInputChannels", 0) > 0:
         device_list.append(info["name"])
+        device_indices_by_name[info["name"]] = idx
 
 # Determine default device
 default_device = device_list[0] if device_list else None
+laptop_mic = next((name for name in device_list if "MacBook" in name and "Microphone" in name), None)
+if laptop_mic:
+    default_device = laptop_mic
 saved = metadata["default_device"]
 if saved in device_list:
     default_device = saved
 
 # Instantiate audio reader ('ear') if possible
 if default_device:
-    device_idx = device_list.index(default_device)
+    device_idx = device_indices_by_name[default_device]
     ear = get_ear(device=device_idx)
 else:
     ear = None
@@ -107,7 +114,7 @@ def device_select_callback(s, a, u):
     metadata["default_device"] = device_name
     save_metadata()
     global ear
-    ear = get_ear(device=device_list.index(device_name))
+    ear = get_ear(device=device_indices_by_name[device_name])
 
 
 # Class management callbacks
@@ -255,8 +262,18 @@ def frame_callback():
     # get the live data
     freqs, amps = get_audio_features(ear)
 
-    # update graph
+    # Plot FFT amplitude against its corresponding frequency in Hz.
     dpg.set_value("fft_series", [list(freqs), list(amps)])
+    if len(freqs) and len(amps):
+        peak_index = int(np.argmax(amps))
+        peak_frequency = float(freqs[peak_index])
+        peak_amplitude = float(amps[peak_index])
+        dpg.set_value(
+            "fft_status",
+            f"Peak: {peak_frequency:.1f} Hz / amplitude {peak_amplitude:.3g}",
+        )
+        dpg.set_axis_limits("x_axis", 0, float(freqs[-1]))
+        dpg.set_axis_limits("y_axis", 0, FFT_Y_AXIS_MAX)
 
     # recording data to collected data
     if dpg.get_value("record_toggle") and record_val:
@@ -314,11 +331,11 @@ with dpg.window(
     tag="fft_vis", label="FFT Spectrum", no_move=True, no_resize=True, no_collapse=True
 ):
     dpg.add_text("Real-time FFT Signal", bullet=True)
+    dpg.add_text("Waiting for microphone data...", tag="fft_status")
     with dpg.plot(label="FFT Plot", height=-1, width=-1):
         dpg.add_plot_axis(dpg.mvXAxis, tag="x_axis", label="Frequency (Hz)")
         dpg.add_plot_axis(dpg.mvYAxis, tag="y_axis", label="Amplitude")
-        dpg.set_axis_limits_auto("x_axis")
-        dpg.set_axis_limits_auto("y_axis")
+        dpg.set_axis_limits("y_axis", 0, FFT_Y_AXIS_MAX)
         dpg.add_line_series([], [], label="FFT", parent="y_axis", tag="fft_series")
 
 # Control window with Train/Infer groups

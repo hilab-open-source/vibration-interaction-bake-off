@@ -1,29 +1,31 @@
 # Vibration Based Interactions Project
 
-This repository contains the code for a vibration based interaction project. This implements a realtime GUI interface for audio signals to feed through Fast Fourier Transform and be visualized. Users can then use this data to train a machine learning model of their choice and check the predictions. Users are expected to use a piezo to detect vibrations which can then be fed through audio signals and read in this program.
+This project provides a real-time FFT visualizer for microphone vibration or audio input. It reads laptop microphone data, computes the Fast Fourier Transform, and displays frequency on the x axis with FFT amplitude on the y axis. The same captured FFT amplitude data can be recorded into classes, used to train a model, and then used for live inference.
 
 ## Installation
 
 ### Mac Setup
-For Mac users, you will first need to install PortAudio. Do so using [brew](https://brew.sh/). To install port audio use
+
+Install PortAudio with [Homebrew](https://brew.sh/):
 
 ```bash
 brew install portaudio
 ```
 
 ## System Setup
-First clone this repository using
+
+Clone this repository and enter the project directory:
 
 ```bash
-git clone https://github.com/whuang37/vibration-interaction-bake-off.git
+git clone https://github.com/hilab-open-source/vibration-interaction-bake-off.git
 cd vibration-interaction-bake-off
 ```
 
-We recommend using [uv](https://docs.astral.sh/uv/) for your package management. We provide instructions for uv and pip if necessary.
+We recommend using [uv](https://docs.astral.sh/uv/) for package management.
 
 ### uv
 
-Users should first install uv from the instructions given [here](https://docs.astral.sh/uv/getting-started/installation/). While in the repository's directory, run the following for package setup.
+Install uv, then run:
 
 ```bash
 uv sync
@@ -31,7 +33,7 @@ uv sync
 
 ### Pip
 
-Users should first be on ```Python 3.10```. Then run the following to install all necessary packages. We recommend using a package manager like venv.
+Use Python 3.10 and create a virtual environment:
 
 ```bash
 python3.10 -m venv .venv
@@ -42,43 +44,42 @@ pip install .
 ## Usage
 
 ### Starting Up
-Using uv, run the following command to start the visualizer fft visualizer.
+
+With uv:
 
 ```bash
 uv run visualizer.py
 ```
 
-Using pip, ensure you have activated your virtual environment and run with the following commands.
+With pip:
 
 ```bash
-.venv/bin/activate
+. .venv/bin/activate
 python visualizer.py
 ```
 
 ### The Visualizer
 
-![The training gui.](assets/train_gui.jpg)
+![FFT Trainer UI showing real-time microphone FFT amplitude by frequency.](assets/fft_gui.png)
 
-Above is an image of the training gui. Before beginning, check to make sure you are using the correct device at the top options bar under "Options".
+The visualizer uses the laptop microphone when available. The plot shows the FFT spectrum of the live microphone signal, with frequency in Hz on the x axis and amplitude on the y axis. The y axis is fixed at a maximum amplitude of `500000` so changes in sound level are easier to compare over time. A live peak readout above the plot shows the strongest frequency and its current amplitude.
 
-On the top left is a visualization of the realtime FFT generated from the selected audio device. Double click the plot to automatically adjust the x and y range. On the right is the training sidebar. Users can add new classes, select classes and then check the record button to add data into each class. Using the "Train Model" button, users can then train their selected model.
+On the right, the training panel lets you add classes, select a target class, and record FFT amplitude samples into that class. After collecting data for at least two classes, use **Train Model** to train the selected model.
 
-![The inference gui.](assets/infer_gui.jpg)
+Switching to **Infer** lets you save or load a trained model and view live predictions from the incoming FFT data.
 
-Upon selecting the "Infer" model, users will see the top gui. Here users can save their model they trained, load a previously trained model, and see the output of their trained models. All potential classes are listed as well as the current prediction. The predicted class will also be highlighted.
+## Modifying
 
-# Modifying
+Most project-specific changes should be made in [`models.py`](models.py). That file contains the interfaces for retrieving audio features, preprocessing captured data, training a model, making predictions, and saving or loading trained models.
 
-Users do not ever have to interact with any GUI code. Instead, [```models.py```](models.py) contains all the necessary interfaces to implement and train your own models. See the file for more details on each function and how to modify and use them.
+## Contributing
 
-# Contributing
+Please report issues through GitHub. If you would like to contribute, fork the repository and open a pull request.
 
-Please report any issues through Github. If you'd like to contribute, please fork and open a pull request.
-
-# Acknowledgements
+## Acknowledgements
 
 This project was created as a part of UCLA's EC ENGR 209AS Designing Interactive Systems and the Los Angeles Computing Circle's curriculum.
 
-# License
+## License
 
 This project is licensed under the [MIT License](LICENSE).
