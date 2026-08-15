@@ -1,11 +1,17 @@
 from typing import Any
 from pathlib import Path
 
+import json
 import pickle
 import numpy as np
-from sklearn.svm import SVC
+from sklearn.svm import LinearSVC, SVC
 
 from stream_analyzer import StreamAnalyzer
+
+MODEL_LINEAR_SVC = "LinearSVC"
+MODEL_POLY_SVC = "SVC poly degree 1"
+MODEL_OPTIONS = [MODEL_LINEAR_SVC, MODEL_POLY_SVC]
+DEFAULT_MODEL_TYPE = MODEL_LINEAR_SVC
 
 
 def get_ear(device: int) -> StreamAnalyzer:
@@ -77,7 +83,10 @@ def preprocess_data(X: np.ndarray) -> np.ndarray:
 
 
 def train_model(
-    X: np.ndarray, y: list[int] | np.ndarray, class_names: list[str]
+    X: np.ndarray,
+    y: list[int] | np.ndarray,
+    class_names: list[str],
+    model_type: str = DEFAULT_MODEL_TYPE,
 ) -> tuple[Any, list[str]]:
     """Interface to train a specific model. Students should choose a model
     and then train it using the data from preprocess data sent in. Models can consist of interfaces
@@ -91,19 +100,30 @@ def train_model(
     Returns:
         tuple[Any, list[str]]: The model and the list of class names for decoding later.
     """
-    # port from java weka
-    model = SVC(
-        C=1.0,  # the same complexity parameter
-        kernel="poly",  # polynomial kernel
-        degree=1,  # exponent E = 1.0
-        coef0=0.0,  # kernel constant term C = 0
-        tol=0.001,  # stopping tolerance L = 0.001
-        shrinking=True,  # use shrinking heuristics (Weka’s SMO always uses it)
-        probability=False,  # disable probability estimates (–V -1 in Weka)
-        break_ties=False,  # no direct Weka equivalent; default is fine
-        random_state=1,  # seed for any randomized parts (–W 1)
-        max_iter=-1,  # no limit on iterations (–V -1 / –N 0 implies full optimization)
-    )
+    if model_type == MODEL_LINEAR_SVC:
+        model = LinearSVC(
+            C=1.0,
+            tol=0.001,
+            random_state=1,
+            max_iter=10_000,
+            dual="auto",
+        )
+    elif model_type == MODEL_POLY_SVC:
+        # Port from Java Weka.
+        model = SVC(
+            C=1.0,  # the same complexity parameter
+            kernel="poly",  # polynomial kernel
+            degree=1,  # exponent E = 1.0
+            coef0=0.0,  # kernel constant term C = 0
+            tol=0.001,  # stopping tolerance L = 0.001
+            shrinking=True,  # use shrinking heuristics (Weka's SMO always uses it)
+            probability=False,  # disable probability estimates (-V -1 in Weka)
+            break_ties=False,  # no direct Weka equivalent; default is fine
+            random_state=1,  # seed for any randomized parts (-W 1)
+            max_iter=-1,  # no limit on iterations (-V -1 / -N 0 implies full optimization)
+        )
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
 
     model.fit(X, y)
     return model, class_names
@@ -125,6 +145,156 @@ def predict(model: Any, X: np.ndarray) -> np.ndarray:
     return y_pred
 
 
+def _format_c_float(value: float) -> str:
+    value = float(np.float32(value))
+    if not np.isfinite(value):
+        raise ValueError("Cannot export non-finite model value to C header")
+    return f"{value:.9g}f"
+
+
+def _format_c_float_rows(rows: np.ndarray, indent: str = "    ") -> str:
+    formatted_rows = []
+    for row in rows:
+        values = [_format_c_float(value) for value in row]
+        lines = []
+        for i in range(0, len(values), 8):
+            lines.append(f"{indent}    " + ", ".join(values[i : i + 8]))
+        formatted_rows.append(f"{indent}{{\n" + ",\n".join(lines) + f"\n{indent}}}")
+    return ",\n".join(formatted_rows)
+
+
+def _class_names_for_export(model_classes: np.ndarray, classes: list[str]) -> list[str]:
+    names = []
+    for class_id in model_classes:
+        try:
+            class_index = int(class_id)
+        except (TypeError, ValueError):
+            names.append(str(class_id))
+            continue
+
+        if 0 <= class_index < len(classes):
+            names.append(str(classes[class_index]))
+        else:
+            names.append(str(class_id))
+    return names
+
+
+def export_model_header(model: Any, classes: list[str], save_path: Path):
+    """Export a trained linear scikit-learn model to an ESP32-friendly C++ header.
+
+    The generated header includes float32 weights, biases, class labels, and
+    prediction helpers. It supports LinearSVC-style models with coef_,
+    intercept_, and classes_ attributes.
+    """
+    if not all(hasattr(model, attr) for attr in ("coef_", "intercept_", "classes_")):
+        raise ValueError("Header export currently supports LinearSVC-style models only")
+
+    weights = np.asarray(model.coef_, dtype=np.float32)
+    biases = np.asarray(model.intercept_, dtype=np.float32)
+    model_classes = np.asarray(model.classes_)
+
+    if weights.ndim != 2:
+        raise ValueError("Expected model.coef_ to be a 2D array")
+    if biases.ndim != 1:
+        raise ValueError("Expected model.intercept_ to be a 1D array")
+    if len(biases) != len(weights):
+        raise ValueError("Model weights and biases have incompatible shapes")
+
+    is_binary_linear = len(model_classes) == 2 and len(weights) == 1
+    is_multiclass_linear = len(model_classes) == len(weights)
+    if not (is_binary_linear or is_multiclass_linear):
+        raise ValueError("Unsupported linear model shape for header export")
+
+    class_ids = [int(class_id) for class_id in model_classes]
+    class_names = _class_names_for_export(model_classes, classes)
+
+    num_score_rows, num_features = weights.shape
+    class_names_literal = ", ".join(json.dumps(name) for name in class_names)
+    class_ids_literal = ", ".join(str(class_id) for class_id in class_ids)
+    biases_literal = ", ".join(_format_c_float(value) for value in biases)
+    weights_literal = _format_c_float_rows(weights)
+
+    if is_binary_linear:
+        predict_index_body = """    float score = vibration_model_score_row(0, features);
+    return score >= 0.0f ? 1 : 0;"""
+    else:
+        predict_index_body = """    int best_index = 0;
+    float best_score = vibration_model_score_row(0, features);
+
+    for (int class_index = 1; class_index < VIBRATION_MODEL_NUM_CLASSES; class_index++) {
+        float score = vibration_model_score_row(class_index, features);
+        if (score > best_score) {
+            best_score = score;
+            best_index = class_index;
+        }
+    }
+
+    return best_index;"""
+
+    header = f"""#pragma once
+
+#ifndef PROGMEM
+#define PROGMEM
+#endif
+
+// Generated from a scikit-learn linear model.
+// The feature vector must match the Python FFT preprocessing exactly.
+#define VIBRATION_MODEL_NUM_CLASSES {len(class_names)}
+#define VIBRATION_MODEL_NUM_FEATURES {num_features}
+#define VIBRATION_MODEL_NUM_SCORE_ROWS {num_score_rows}
+
+static const int VIBRATION_MODEL_CLASS_IDS[VIBRATION_MODEL_NUM_CLASSES] PROGMEM = {{
+    {class_ids_literal}
+}};
+
+static const char *const VIBRATION_MODEL_CLASS_NAMES[VIBRATION_MODEL_NUM_CLASSES] = {{
+    {class_names_literal}
+}};
+
+static const float VIBRATION_MODEL_BIASES[VIBRATION_MODEL_NUM_SCORE_ROWS] PROGMEM = {{
+    {biases_literal}
+}};
+
+static const float VIBRATION_MODEL_WEIGHTS[VIBRATION_MODEL_NUM_SCORE_ROWS][VIBRATION_MODEL_NUM_FEATURES] PROGMEM = {{
+{weights_literal}
+}};
+
+static inline float vibration_model_score_row(
+    int row,
+    const float features[VIBRATION_MODEL_NUM_FEATURES]
+) {{
+    float score = VIBRATION_MODEL_BIASES[row];
+
+    for (int feature_index = 0; feature_index < VIBRATION_MODEL_NUM_FEATURES; feature_index++) {{
+        score += VIBRATION_MODEL_WEIGHTS[row][feature_index] * features[feature_index];
+    }}
+
+    return score;
+}}
+
+static inline int vibration_model_predict_index(
+    const float features[VIBRATION_MODEL_NUM_FEATURES]
+) {{
+{predict_index_body}
+}}
+
+static inline int vibration_model_predict_id(
+    const float features[VIBRATION_MODEL_NUM_FEATURES]
+) {{
+    return VIBRATION_MODEL_CLASS_IDS[vibration_model_predict_index(features)];
+}}
+
+static inline const char *vibration_model_predict_name(
+    const float features[VIBRATION_MODEL_NUM_FEATURES]
+) {{
+    return VIBRATION_MODEL_CLASS_NAMES[vibration_model_predict_index(features)];
+}}
+"""
+
+    with open(save_path, "w") as f:
+        f.write(header)
+
+
 def save_model(model: Any, classes: list[str], save_path: Path):
     """Interface to save your generated model.
 
@@ -134,7 +304,11 @@ def save_model(model: Any, classes: list[str], save_path: Path):
         save_path (Path): File path to save the model. Can only end in .model.
     """
 
-    payload = {"model": model, "classes": classes}
+    payload = {
+        "model": model,
+        "classes": classes,
+        "model_type": type(model).__name__,
+    }
 
     with open(save_path, "wb") as f:
         pickle.dump(payload, f)

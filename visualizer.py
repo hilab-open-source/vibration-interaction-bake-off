@@ -15,6 +15,8 @@ from models import (
     get_audio_features,
     preprocess_data,
     predict,
+    DEFAULT_MODEL_TYPE,
+    MODEL_OPTIONS,
 )
 
 # Ensure metadata directory exists
@@ -30,14 +32,21 @@ def save_metadata():
 
 
 def load_metadata():
+    defaults = {
+        "default_device": "",
+        "data_classes": [],
+        "model_type": DEFAULT_MODEL_TYPE,
+    }
     try:
         with open("metadata/metadata.json", "r") as f:
-            return json.load(f)
+            return defaults | json.load(f)
     except FileNotFoundError:
-        return {"default_device": "", "data_classes": []}
+        return defaults
 
 
 metadata = load_metadata()
+if metadata["model_type"] not in MODEL_OPTIONS:
+    metadata["model_type"] = DEFAULT_MODEL_TYPE
 
 # ——— Global State ———
 
@@ -50,6 +59,7 @@ device_indices_by_name = {}  # {device_name: system audio device index}
 
 collected_data = {}  # { class_name: [data]}
 record_val = None  # Currently selected class
+is_recording = False  # Whether training data is currently being collected
 
 model = None  # Loaded/trained model
 infer_classes = []
@@ -107,6 +117,31 @@ def format_collected_data(collected_data):
     return x, y, class_names
 
 
+def update_recording_ui():
+    """Keep the recording button and status text in sync with state."""
+    if not dpg.does_item_exist("record_button"):
+        return
+
+    if is_recording:
+        dpg.configure_item("record_button", label="Stop Recording")
+        dpg.set_value("recording_status", f"Collecting data: {record_val}")
+        dpg.configure_item("recording_status", color=(80, 180, 100))
+    elif record_val:
+        dpg.configure_item("record_button", label="Record Data")
+        dpg.set_value("recording_status", f"Ready: {record_val}")
+        dpg.configure_item("recording_status", color=(180, 180, 180))
+    else:
+        dpg.configure_item("record_button", label="Record Data")
+        dpg.set_value("recording_status", "Select a class first")
+        dpg.configure_item("recording_status", color=(180, 180, 180))
+
+
+def set_recording(recording):
+    global is_recording
+    is_recording = bool(recording and record_val)
+    update_recording_ui()
+
+
 # ——— Callback Definitions ———
 def device_select_callback(s, a, u):
     """Handle user selecting a new audio device."""
@@ -115,6 +150,11 @@ def device_select_callback(s, a, u):
     save_metadata()
     global ear
     ear = get_ear(device=device_indices_by_name[device_name])
+
+
+def model_select_callback(s, a, u):
+    metadata["model_type"] = a
+    save_metadata()
 
 
 # Class management callbacks
@@ -150,8 +190,15 @@ def select_class_callback(cls):
     global record_val
     record_val = cls
     dpg.set_value("selected_class", f"Selected: {cls}")
-    dpg.set_value("record_toggle", False)
-    dpg.configure_item("record_toggle", enabled=True)
+    dpg.configure_item("record_button", enabled=True)
+    set_recording(False)
+
+
+def record_button_callback():
+    if not record_val:
+        set_recording(False)
+        return
+    set_recording(not is_recording)
 
 
 def clear_class(cls):
@@ -165,8 +212,15 @@ def clear_all_classes():
 
 
 def delete_class(cls):
+    global record_val
     collected_data.pop(cls, None)
     dpg.delete_item(f"grp_{cls}")
+
+    if cls == record_val:
+        record_val = None
+        dpg.set_value("selected_class", f"Selected: {record_val}")
+        dpg.configure_item("record_button", enabled=False)
+        set_recording(False)
 
     # updates the metadata
     metadata["data_classes"] = list(collected_data.keys())
@@ -205,10 +259,11 @@ def train_model_callback():
     def _background_training():
         X, y, class_names = format_collected_data(collected_data)
         X = preprocess_data(X)
+        model_type = dpg.get_value("model_combo")
 
         # train and set the global model
         global model
-        model, infer_classes = train_model(X, y, class_names)
+        model, infer_classes = train_model(X, y, class_names, model_type)
         set_infer_classes(infer_classes)
 
         dpg.configure_item("train_button", enabled=True)
@@ -276,7 +331,7 @@ def frame_callback():
         dpg.set_axis_limits("y_axis", 0, FFT_Y_AXIS_MAX)
 
     # recording data to collected data
-    if dpg.get_value("record_toggle") and record_val:
+    if is_recording and record_val:
         # TODO: Maybe save the frequency X values for preprocessing?
         collected_data[record_val].append(amps)
         dpg.set_value(
@@ -307,6 +362,8 @@ def on_vp_resize(s, a):
     # Position and size windows dynamically
     dpg.configure_item("fft_vis", pos=(0, 0), width=w2, height=h2)
     dpg.configure_item("ctrl_win", pos=(w2, 0), width=W - w2, height=h2)
+    if dpg.does_item_exist("recording_status"):
+        dpg.configure_item("recording_status", wrap=max(140, W - w2 - 24))
 
 
 # ——— UI Construction ———
@@ -354,6 +411,15 @@ with dpg.window(
 
     # Training UI group
     with dpg.group(tag="train_group"):
+        dpg.add_text("Model:")
+        dpg.add_combo(
+            items=MODEL_OPTIONS,
+            default_value=metadata["model_type"],
+            tag="model_combo",
+            callback=model_select_callback,
+            width=-1,
+        )
+        dpg.add_separator()
         with dpg.group(horizontal=True):
             dpg.add_input_text(tag="class_input")
             dpg.add_button(label="Add Class", callback=add_class_callback)
@@ -365,7 +431,18 @@ with dpg.window(
             dpg.add_button(label="Delete All", callback=clear_all_classes)
         dpg.add_separator()
         dpg.add_text(f"Selected: {record_val}", tag="selected_class")
-        dpg.add_checkbox(label="Record Data", tag="record_toggle", enabled=False)
+        dpg.add_button(
+            label="Record Data",
+            tag="record_button",
+            enabled=False,
+            callback=record_button_callback,
+        )
+        dpg.add_text(
+            "Select a class first",
+            tag="recording_status",
+            color=(180, 180, 180),
+            wrap=220,
+        )
         with dpg.group(horizontal=True):
             dpg.add_button(
                 label="Train Model", tag="train_button", callback=train_model_callback

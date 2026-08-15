@@ -64,9 +64,30 @@ python visualizer.py
 
 The visualizer uses the laptop microphone when available. The plot shows the FFT spectrum of the live microphone signal, with frequency in Hz on the x axis and amplitude on the y axis. The y axis is fixed at a maximum amplitude of `500000` so changes in sound level are easier to compare over time. A live peak readout above the plot shows the strongest frequency and its current amplitude.
 
-On the right, the training panel lets you add classes, select a target class, and record FFT amplitude samples into that class. After collecting data for at least two classes, use **Train Model** to train the selected model.
+On the right, the training panel lets you choose a model, add classes, select a target class, and record FFT amplitude samples into that class. `LinearSVC` is the default because it is smaller and easier to port to embedded devices such as ESP32. After collecting data for at least two classes, use **Train Model** to train the selected model.
 
 Switching to **Infer** lets you save or load a trained model and view live predictions from the incoming FFT data.
+
+### Exporting for ESP32
+
+Train with `LinearSVC`, save the trained `.model` file, then convert it to a C++ header with the standalone export script:
+
+```bash
+uv run export_model_header.py path/to/model.model vibration_model.h
+```
+
+Include the generated header in your ESP32 project and pass in a feature vector with the same length and preprocessing used during Python training:
+
+```cpp
+#include "vibration_model.h"
+
+float features[VIBRATION_MODEL_NUM_FEATURES];
+
+int class_index = vibration_model_predict_index(features);
+const char *class_name = vibration_model_predict_name(features);
+```
+
+The ESP32 FFT feature extraction must match the Python feature extraction. If you change FFT size, sample rate, bin count, or preprocessing on ESP32, retrain using data with that same feature format.
 
 ## Modifying
 
